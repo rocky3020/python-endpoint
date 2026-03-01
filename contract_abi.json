@@ -1,0 +1,25 @@
+[
+	{
+		"inputs": [
+			{
+				"internalType": "address payable",
+				"name": "addrA",
+				"type": "address"
+			},
+			{
+				"internalType": "address payable",
+				"name": "addrB",
+				"type": "address"
+			},
+			{
+				"internalType": "address payable",
+				"name": "addrC",
+				"type": "address"
+			}
+		],
+		"name": "distribute",
+		"outputs": [],
+		"stateMutability": "payable",
+		"type": "function"
+	}
+]
