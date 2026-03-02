@@ -1,7 +1,9 @@
-from fastapi import FastAPI
-
-app = FastAPI()
+from PaymentWallet import app as app
 
 @app.get("/")
 def home():
-    return {"status": "working"}
+    return {"status": "ok"}
+
+@app.get("/health")
+def health():
+    return {"ok": True}
