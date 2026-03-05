@@ -4,6 +4,7 @@ import time
 from decimal import Decimal
 from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
+from typing import Optional, Any, Dict
 from sqlalchemy import create_engine, text
 from redis import Redis
 from rq import Queue
@@ -32,19 +33,9 @@ w3 = Web3(Web3.HTTPProvider(RPC_URL))
 
 app = FastAPI()
 
-@app.get("/health")
-def health():
-    return {"ok": True}
-
 class JobDTO(BaseModel):
     wallet: str
     amount: float  # human units
-
-class UpdateNodeAttributesDTO(BaseModel):
-    api_key: str | None = None
-    job_id: int | None = None
-    attribute_filters: dict
-    new_attributes: dict
 
 def to_token_units(amount: float) -> int:
     factor = 10 ** TOKEN_DECIMALS
@@ -73,34 +64,38 @@ def request_stake(dto: JobDTO, x_api_key: str = Header(default=None)):
     q.enqueue("worker.process_job", job_id, job_timeout=600)
     return {"job_id": job_id, "status": "queued"}
 
+class UpdateNodeAttributesDTO(BaseModel):
+    api_key: Optional[str] = None
+    job_id: Optional[int] = None
+    attribute_filters: Optional[Dict[str, Any]] = None
+    new_attributes: Dict[str, Any]
+
 @app.post("/update_node_attributes")
 def update_node_attributes(payload: UpdateNodeAttributesDTO, x_api_key: str = Header(default=None)):
-    key_ok = True
-    if API_KEY:
-        key_ok = (x_api_key == API_KEY) or (payload.api_key == API_KEY)
-    if not key_ok:
+    if API_KEY and not (x_api_key == API_KEY or payload.api_key == API_KEY):
         raise HTTPException(status_code=401, detail="Invalid API key")
-    allowed_cols = {"status", "tx_hash", "amount", "user_wallet", "job_type", "id"}
-    filters = {}
-    updates = {}
+    allowed = {"status", "tx_hash", "amount", "job_type", "user_wallet"}
+    updates = {k: v for k, v in payload.new_attributes.items() if k in allowed}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updatable fields provided")
+    conditions = []
+    params: Dict[str, Any] = {}
     if payload.job_id is not None:
-        filters["id"] = payload.job_id
-    for k, v in payload.attribute_filters.items():
-        if k in allowed_cols:
-            filters[k] = v
-    for k, v in payload.new_attributes.items():
-        if k in allowed_cols and k != "id":
-            updates[k] = v
-    if not filters or not updates:
-        raise HTTPException(status_code=400, detail="No valid filters or updates")
-    where_clause = " AND ".join([f"{k} = :f_{k}" for k in filters])
-    set_clause = ", ".join([f"{k} = :u_{k}" for k in updates])
-    params = {}
-    for k, v in filters.items():
-        params[f"f_{k}"] = v
+        conditions.append("id = :id")
+        params["id"] = payload.job_id
+    if payload.attribute_filters:
+        for k, v in payload.attribute_filters.items():
+            if k in allowed or k == "id":
+                conditions.append(f"{k} = :f_{k}")
+                params[f"f_{k}"] = v
+    if not conditions:
+        raise HTTPException(status_code=400, detail="No filter provided")
+    set_parts = []
     for k, v in updates.items():
+        set_parts.append(f"{k} = :u_{k}")
         params[f"u_{k}"] = v
+    sql = f"UPDATE jobs SET {', '.join(set_parts)} WHERE {' AND '.join(conditions)}"
     with engine.begin() as conn:
-        res = conn.execute(text(f"UPDATE jobs SET {set_clause} WHERE {where_clause} RETURNING id"), params)
-        rows = res.fetchall()
-    return {"updated_ids": [r[0] for r in rows]}
+        res = conn.execute(text(sql), params)
+        count = res.rowcount if res is not None else 0
+    return {"updated_rows": count}
