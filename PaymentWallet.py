@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 from typing import Optional, Any, Dict
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from redis import Redis
 from rq import Queue
 from dotenv import load_dotenv
@@ -52,15 +53,16 @@ def request_stake(dto: JobDTO, x_api_key: str = Header(default=None)):
 
     units = to_token_units(dto.amount)
 
-    # Create job record in DB
-    with engine.begin() as conn:
-        res = conn.execute(
-            text("INSERT INTO jobs (job_type, user_wallet, amount, status) VALUES (:t,:w,:a,'PENDING') RETURNING id"),
-            {"t": "STAKE", "w": checksum, "a": units}
-        )
-        job_id = res.scalar_one()
+    try:
+        with engine.begin() as conn:
+            res = conn.execute(
+                text("INSERT INTO jobs (job_type, user_wallet, amount, status) VALUES (:t,:w,:a,'PENDING') RETURNING id"),
+                {"t": "STAKE", "w": checksum, "a": units}
+            )
+            job_id = res.scalar_one()
+    except OperationalError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
-    # enqueue worker job with job_id
     q.enqueue("worker.process_job", job_id, job_timeout=600)
     return {"job_id": job_id, "status": "queued"}
 
@@ -95,7 +97,10 @@ def update_node_attributes(payload: UpdateNodeAttributesDTO, x_api_key: str = He
         set_parts.append(f"{k} = :u_{k}")
         params[f"u_{k}"] = v
     sql = f"UPDATE jobs SET {', '.join(set_parts)} WHERE {' AND '.join(conditions)}"
-    with engine.begin() as conn:
-        res = conn.execute(text(sql), params)
-        count = res.rowcount if res is not None else 0
+    try:
+        with engine.begin() as conn:
+            res = conn.execute(text(sql), params)
+            count = res.rowcount if res is not None else 0
+    except OperationalError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
     return {"updated_rows": count}
